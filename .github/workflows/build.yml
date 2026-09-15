@@ -6,24 +6,8 @@ permissions:
 on:
   workflow_dispatch:
     inputs:
-      TODO:
-        description: To do
-        default: "kernel"
-        type: choice
-        options:
-          - "kernel"
-          - "defconfig"
-
-      TEST:
-        description: debug the pipeline
-        default: "no"
-        type: choice
-        options:
-          - "no"
-          - "yes"
-
       LTO:
-        description: enable LTO optimization
+        description: "Enable LTO optimization"
         default: "fullLTO"
         type: choice
         options:
@@ -31,30 +15,8 @@ on:
           - "thinLTO"
           - "fullLTO"
 
-      KERNEL_VERSION:
-        description: "GKI LTS kernel line to build"
-        default: "All"
-        type: choice
-        options:
-          - "All"
-          - "5.10"
-          - "5.15"
-          - "6.1"
-          - "6.6"
-          - "6.12"
-
-      BUILD_VANILLA:
-        description: "Build Vanilla (no KSU)"
-        type: boolean
-        default: true
-
-      BUILD_KSU:
-        description: "Build with KernelSU"
-        type: boolean
-        default: true
-
-      BUILD_KSU_SUSFS:
-        description: "Build with KernelSU and its forks (KernelSU Next) + SUSFS"
+      DROIDSPACES:
+        description: "Enable DroidSpaces"
         type: boolean
         default: true
 
@@ -62,21 +24,6 @@ on:
         description: "Clean ThinLTO cache to fix .config bug"
         type: boolean
         default: true
-
-      DROIDSPACES:
-        description: "Enable droidspaces-oss support"
-        type: boolean
-        default: true
-
-      NH:
-        description: "Enable NetHunter support"
-        type: boolean
-        default: true
-
-      NM:
-        description: "Enable NoMount support"
-        type: boolean
-        default: false
 
 env:
   MAN_DISABLE: true
@@ -103,7 +50,6 @@ jobs:
               --notes "Persistent compiler cache used by the build workflow. Each build matrix entry keeps one asset here (ccache-<variant>.tar.zst). Safe to delete if you want to force a cold cache for everything; the workflow recreates this release and rebuilds the caches automatically, just slower for the next run per variant." \
               --prerelease \
               --latest=false
-          fi
 
   prepare:
     runs-on: ubuntu-latest
@@ -112,17 +58,12 @@ jobs:
 
     steps:
       - name: Checkout source
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
       - name: Generate build matrix
         id: set-matrix
-        env:
-          KERNEL_VERSION: ${{ github.event.inputs.KERNEL_VERSION }}
-          BUILD_VANILLA: ${{ github.event.inputs.BUILD_VANILLA }}
-          BUILD_KSU: ${{ github.event.inputs.BUILD_KSU }}
-          BUILD_KSU_SUSFS: ${{ github.event.inputs.BUILD_KSU_SUSFS }}
         run: |
           python3 py/generate-matrix.py >> "$GITHUB_OUTPUT"
 
@@ -135,7 +76,7 @@ jobs:
 
     steps:
       - name: Checkout source
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
@@ -146,7 +87,7 @@ jobs:
           pip install lxml
 
       - name: Restore ccache from release
-        if: github.event.inputs.TEST == 'no' && github.event.inputs.TODO != 'defconfig'
+        if: github.event.inputs.TEST == 'no'
         id: restore-ccache
         uses: ./.github/actions/ccache-restore
         with:
@@ -157,20 +98,18 @@ jobs:
       - name: Run Build Script
         env:
           GH_TOKEN: ${{ github.token }}
-          KERNEL_REPO: https://github.com/ahmed-alnassif/GKI-Duchamp-6.1
-          KERNEL_VERSION: ${{ matrix.kernel_version }}
+          KERNEL_REPO: https://github.com/ahmed-alnassif/GKI-Duchamp-5.10
+          KERNEL_VERSION: "5.10"
           KSU: ${{ matrix.KSU }}
           KSU_COMPAT: ${{ matrix.KSU_COMPAT }}
           KSU_SUSFS: ${{ matrix.KSU_SUSFS }}
           C_LTO: ${{ matrix.C_LTO }}
           No_DS: ${{ matrix.No_DS }}
-          TODO: ${{ inputs.TODO }}
-          TEST: ${{ inputs.TEST }}
+          TODO: "kernel"
+          TEST: "no"
           LTO: ${{ inputs.LTO }}
           CLEAN_LTO_CACHE: ${{ inputs.CLEAN_LTO_CACHE }}
           DROIDSPACES: ${{ inputs.DROIDSPACES }}
-          NH: ${{ inputs.NH }}
-          NM: ${{ inputs.NM }}
           BUILD_NAME: ${{ matrix.name }}
           RUN_NUM: -r${{ github.run_number }}
         run: |
@@ -178,45 +117,13 @@ jobs:
           chmod +x *.sh py/*.py
           ./build.sh
 
-      - name: Create KernelSU module for wireless modules
-        if: ${{ inputs.NH }}
-        run: |
-          echo "Extracting wireless modules..."
-          NAME="WirelessKSU"
-          WKSU="modules/$NAME"
-          RPWD=$(pwd)
-          mkdir -p "$WKSU/lkm"
-          mkdir -p "$WKSU/system/etc/firmware/rtw88"
-
-          for mod in rfkill cfg80211 mac80211 'rtw88*' r8188eu libarc4; do
-            found=$(find out/ -iname "${mod}.ko" 2>/dev/null)
-            if [ -n "$found" ]; then
-              echo "$found" | xargs -I{} cp {} "$WKSU/lkm/"
-            else
-              echo "[-] $mod: no .ko found (not built or built-in)"
-            fi
-          done
-
-          if [ -n "$(ls -A "$WKSU/lkm" 2>/dev/null)" ]; then
-            sed -i "s/version=.*/version=${{ env.RELEASE }}-${{ matrix.kernel_version }}-${{ env.VARIANT }}/" "$WKSU/module.prop"
-            cp ksrc/drivers/net/wireless/realtek/rtw88/firmware/* "$WKSU/system/etc/firmware/rtw88" 2>/dev/null || echo "[-] rtw88 firmware not found, skipping"
-            echo "Modules found:"
-            ls -la "$WKSU/lkm/"
-            mkdir -p artifacts
-            cd "$WKSU"
-            zip -9 -r "$RPWD/artifacts/$NAME-${{ matrix.kernel_version }}-${{ env.VARIANT }}-${{ env.RELEASE }}.zip" .
-            echo "$NAME-${{ matrix.kernel_version }}-${{ env.VARIANT }}-${{ env.RELEASE }}.zip created"
-          else
-            echo "No .ko files found (drivers may be built-in for this kernel version)"
-          fi
-
       - name: ccache stats
         if: always()
         run: |
           ccache --show-stats
 
       - name: Save ccache to release
-        if: always() && github.event.inputs.TEST == 'no' && github.event.inputs.TODO != 'defconfig'
+        if: always() && github.event.inputs.TEST == 'no'
         uses: ./.github/actions/ccache-save
         with:
           repo: ${{ github.repository }}
@@ -256,7 +163,7 @@ jobs:
 
       - name: Upload environment file
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v4
         with:
           name: build-env-${{ matrix.name }}-${{ github.run_number }}
           path: |
@@ -264,26 +171,9 @@ jobs:
             rejected-patches-${{ matrix.name }}/
           retention-days: 1
 
-      - name: Send rejected patches to Telegram
-        if: always()
-        run: |
-          if [ -d "rejected-patches-${{ matrix.name }}" ] && [ "$(find rejected-patches-${{ matrix.name }} -type f | wc -l)" -gt 0 ]; then
-            for file in rejected-patches-${{ matrix.name }}/*; do
-              if [ -f "$file" ]; then
-                curl -s -X POST "https://api.telegram.org/bot${{ secrets.rej_BOT_TOKEN }}/sendDocument" \
-                  -F chat_id="${{ secrets.rej_CHAT_ID }}" \
-                  -F document=@"$file" \
-                  -F caption="Rejected patch: $(basename "$file") - ${{ matrix.name }}"
-                sleep 1
-              fi
-            done
-          else
-            echo "No rejected patches to send"
-          fi
-
       - name: Upload build artifacts
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.name }}-${{ github.run_number }}
           path: artifacts/
@@ -301,7 +191,7 @@ jobs:
           merge-multiple: true
 
       - name: Upload combined artifacts
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v4
         with:
           name: all-builds-${{ github.run_number }}
           retention-days: 7
@@ -311,11 +201,11 @@ jobs:
 
   release:
     needs: build
-    if: always() && github.event.inputs.TODO != 'defconfig'
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
@@ -333,15 +223,12 @@ jobs:
 
       - name: Load environment from builds and prepare release body
         env:
-          TEST_INPUT: ${{ inputs.TEST }}
-          DROIDSPACES_INPUT: ${{ inputs.DroidSpaces }}
-          NH_INPUT: ${{ inputs.NH }}
-          NM_INPUT: ${{ inputs.NM }}
+          DROIDSPACES_INPUT: ${{ inputs.DROIDSPACES }}
           LTO_INPUT: ${{ inputs.LTO }}
         run: python3 .github/scripts/prepare_release.py
 
       - name: Upload All Builds to release repo
-        uses: softprops/action-gh-release@v3.0.2
+        uses: softprops/action-gh-release@v2
         with:
           name: ${{ env.RELEASE_NAME }}
           tag_name: ${{ env.RELEASE }}
@@ -351,133 +238,3 @@ jobs:
             release-artifacts/checksums.txt
             release-artifacts/checksums-md5.txt
           body_path: release_body.md
-
-      - name: Upload to Telegram
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
-          TOPIC_ID: ${{ secrets.TOPIC_ID }}
-          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          REPOSITORY: ${{ github.repository }}
-          RUN_NUMBER: ${{ github.run_number }}
-          RELEASE_NAME: ${{ env.RELEASE_NAME }}
-          RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ env.RELEASE }}
-          MULTI_KERNEL: ${{ env.MULTI_KERNEL }}
-          KERNEL_VERSIONS: ${{ env.KERNEL_VERSIONS }}
-          KERNEL_VERSION: ${{ env.KERNEL_VERSION }}
-          ANDROID_RELEASE: ${{ env.ANDROID_RELEASE }}
-        run: |
-          set -euo pipefail
-
-          [[ -n "$BOT_TOKEN" ]] || { echo "::error::BOT_TOKEN is not set"; exit 1; }
-          [[ -n "$CHAT_ID" ]] || { echo "::error::CHAT_ID is not set"; exit 1; }
-          [[ -n "$TOPIC_ID" ]] || { echo "::error::TOPIC_ID is not set"; exit 1; }
-
-          # MULTI_KERNEL/KERNEL_VERSIONS/KERNEL_VERSION/ANDROID_RELEASE come
-          # from prepare_release.py's export_github_env(). ANDROID_RELEASE
-          # is only set when a single line was built.
-          RELEASE_NAME=$(python3 .github/scripts/markdown_to_telegram.py --escape "$RELEASE_NAME")
-
-          read_or_default() {
-          if [[ -f "$1" ]]; then
-              python3 .github/scripts/markdown_to_telegram.py "$1"
-            else
-              echo "Not available"
-            fi
-          }
-
-          if [[ "$MULTI_KERNEL" == "true" ]]; then
-            # Several GKI lines were built in this run; a full per-line
-            # changelog dump doesn't fit a Telegram message, so point to
-            # the GitHub release notes instead.
-            LINES_ESCAPED=$(printf '%s' "$KERNEL_VERSIONS" | sed -e 's/\./\\./g' -e 's/,/, /g')
-
-            CAPTION=$(cat <<EOF
-          **$RELEASE_NAME**
-
-          **GKI lines built:** $LINES_ESCAPED
-
-          Full per\-line changelogs and downloads are on the release page\.
-
-          [**Download**]($RELEASE_URL)
-
-          [**Support the project**](https://github.com/ahmed-alnassif#-support-my-work)
-
-          [Commit]($COMMIT_URL) • [CI \#$RUN_NUMBER]($RUN_URL)
-          EOF
-            )
-          else
-            KERNEL_VERSION="${KERNEL_VERSION:-6.1}"
-            ANDROID_RELEASE="${ANDROID_RELEASE:-14}"
-
-            # MarkdownV2-escape the "AndroidNN-K.V-LTS" label and bare kernel
-            # version for use inside the heredocs below.
-            KERNEL_LABEL_ESCAPED=$(printf '%s' "Android${ANDROID_RELEASE}-${KERNEL_VERSION}-LTS" | sed -e 's/\./\\./g' -e 's/-/\\-/g')
-            KERNEL_VERSION_ESCAPED=$(printf '%s' "$KERNEL_VERSION" | sed 's/\./\\./g')
-
-            CHANGELOG_BODY=$(cat <<INNER
-          What's new:
-          **${KERNEL_LABEL_ESCAPED}:**
-          $(read_or_default "release-artifacts/android_kernel-${KERNEL_VERSION}_changelog.txt")
-
-          \-\-\-
-          **SuSFS:**
-          $(read_or_default "release-artifacts/susfs_changelog-${KERNEL_VERSION}.txt")
-
-          \-\-\-
-          **NoMount:**
-          $(read_or_default "release-artifacts/nomount_changelog.txt")
-
-          \-\-\-
-          **KernelSU:**
-          $(read_or_default "release-artifacts/ksu_changelog.txt")
-
-          \-\-\-
-          **ReSukiSU:**
-          $(read_or_default "release-artifacts/ReSukiSU_changelog.txt")
-          INNER
-            )
-
-            CHANGELOG_QUOTED=$(printf '%s\n' "$CHANGELOG_BODY" | sed 's/^[[:space:]]*//' | awk '
-              NR==1 { print "**>" $0; next }
-              { lines[NR] = $0 }
-              END {
-                for (i = 2; i <= NR; i++) {
-                  if (i == NR) print ">" lines[i] "||"
-                  else print ">" lines[i]
-                }
-              }
-            ')
-
-            CAPTION=$(cat <<EOF
-          **$RELEASE_NAME**
-
-          **Supported devices:**
-          All devices that shipped with **Linux ${KERNEL_VERSION_ESCAPED}\.x** and **Android ${ANDROID_RELEASE}** \(stock or AOSP\)
-
-          $CHANGELOG_QUOTED
-
-          [**Download**]($RELEASE_URL)
-
-          [**Support the project**](https://github.com/ahmed-alnassif/GKID-Kernels#-support-this-project)
-
-          [Commit]($COMMIT_URL) • [CI \#$RUN_NUMBER]($RUN_URL)
-          EOF
-            )
-          fi
-
-          CAPTION=$(printf '%s\n' "$CAPTION" | sed 's/^[[:space:]]*//')
-
-          curl --fail-with-body -sS \
-            -F "chat_id=$CHAT_ID" \
-            -F "message_thread_id=$TOPIC_ID" \
-            -F "photo=@docs/banner.png" \
-            "https://api.telegram.org/bot$BOT_TOKEN/sendPhoto"
-
-          curl --fail-with-body -sS \
-            -F "chat_id=$CHAT_ID" \
-            -F "message_thread_id=$TOPIC_ID" \
-            -F "text=$CAPTION" \
-            -F "parse_mode=MarkdownV2" \
-            "https://api.telegram.org/bot$BOT_TOKEN/sendMessage"
